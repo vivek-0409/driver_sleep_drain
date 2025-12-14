@@ -1,0 +1,10 @@
+# .streamlit/config.toml
+
+[general]
+# Set the Python version to 3.10 to ensure compatibility with MediaPipe wheels.
+magicEnabled = false 
+
+[server]
+runOnSave = true
+# Use Python 3.10
+python = "/usr/bin/python3.10"
