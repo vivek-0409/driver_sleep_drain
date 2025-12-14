@@ -1,150 +1,189 @@
-# app.py
 import streamlit as st
 import cv2
 import mediapipe as mp
 import numpy as np
-import collections
-import threading
+import tempfile
 import time
-from playsound import playsound
 
-# -----------------------------
-# Streamlit Page Config
-# -----------------------------
+# -------------------------------------------------
+# Page Config
+# -------------------------------------------------
 st.set_page_config(
-    page_title="Driver Drowsiness Monitor",
+    page_title="Driver Drowsiness Detection",
     page_icon="🚗",
     layout="wide"
 )
 
-st.title("🚗 Driver Sleep / Drowsiness Detection System")
-st.markdown("Real-time eye monitoring using **MediaPipe + OpenCV**")
+# -------------------------------------------------
+# Custom CSS (Professional UI + Animation)
+# -------------------------------------------------
+st.markdown("""
+<style>
+body {
+    background: linear-gradient(135deg, #0f172a, #020617);
+    color: white;
+}
 
-# -----------------------------
-# Parameters
-# -----------------------------
-CAMERA_ID = 0
-BUFFER_LEN = 150
-ACTIVE_PERCENT_THRESHOLD = 70
-EYE_RATIO_THRESHOLD = 0.20
-SIREN_FILE = "Alarm.wav"
+.card {
+    background: rgba(255,255,255,0.08);
+    border-radius: 16px;
+    padding: 20px;
+    box-shadow: 0 0 25px rgba(59,130,246,0.3);
+    animation: fadeIn 1.2s ease-in-out;
+}
 
-# -----------------------------
+@keyframes fadeIn {
+    from {opacity: 0; transform: translateY(15px);}
+    to {opacity: 1; transform: translateY(0);}
+}
+
+.title {
+    font-size: 2.2rem;
+    font-weight: 800;
+    text-align: center;
+    background: linear-gradient(to right, #38bdf8, #22c55e);
+    -webkit-background-clip: text;
+    color: transparent;
+}
+
+.subtitle {
+    text-align: center;
+    font-size: 1.05rem;
+    color: #cbd5f5;
+}
+
+.step {
+    font-size: 1rem;
+    padding: 10px 0;
+}
+
+.status-box {
+    font-size: 1.4rem;
+    font-weight: 700;
+    padding: 12px;
+    border-radius: 12px;
+    text-align: center;
+}
+
+.alert {
+    background: rgba(34,197,94,0.15);
+    color: #22c55e;
+}
+
+.drowsy {
+    background: rgba(239,68,68,0.15);
+    color: #ef4444;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# -------------------------------------------------
+# Header
+# -------------------------------------------------
+st.markdown("<div class='title'>🚗 Driver Drowsiness Detection System</div>", unsafe_allow_html=True)
+st.markdown("<div class='subtitle'>AI-powered eye-based drowsiness monitoring using MediaPipe</div><br>", unsafe_allow_html=True)
+
+# -------------------------------------------------
+# Step-by-Step Guide
+# -------------------------------------------------
+with st.container():
+    st.markdown("<div class='card'>", unsafe_allow_html=True)
+    st.markdown("### ℹ️ How to Use (Step-by-Step)")
+    st.markdown("""
+    <div class='step'>1️⃣ Upload a **driving video** 🎥</div>
+    <div class='step'>2️⃣ Click **▶ Start Detection**</div>
+    <div class='step'>3️⃣ Watch real-time detection status</div>
+    <div class='step'>4️⃣ Click **⏹ Stop Detection** anytime</div>
+    """, unsafe_allow_html=True)
+    st.markdown("</div><br>", unsafe_allow_html=True)
+
+# -------------------------------------------------
 # MediaPipe Setup
-# -----------------------------
+# -------------------------------------------------
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh = mp_face_mesh.FaceMesh(
-    static_image_mode=False,
     max_num_faces=1,
     refine_landmarks=True,
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5
 )
 
-# Eye landmarks
-L_EYE_UP, L_EYE_DOWN, L_EYE_LEFT, L_EYE_RIGHT = 159, 145, 33, 133
-R_EYE_UP, R_EYE_DOWN, R_EYE_LEFT, R_EYE_RIGHT = 386, 374, 362, 263
+LEFT_EYE = [33, 160, 158, 133, 153, 144]
+RIGHT_EYE = [362, 385, 387, 263, 373, 380]
+EYE_RATIO_THRESHOLD = 0.20
 
-recent_activity = collections.deque(maxlen=BUFFER_LEN)
+def eye_ratio(landmarks, eye, w, h):
+    pts = [(int(landmarks[p].x * w), int(landmarks[p].y * h)) for p in eye]
+    v1 = np.linalg.norm(np.array(pts[1]) - np.array(pts[5]))
+    v2 = np.linalg.norm(np.array(pts[2]) - np.array(pts[4]))
+    h_dist = np.linalg.norm(np.array(pts[0]) - np.array(pts[3]))
+    return (v1 + v2) / (2 * h_dist)
 
-alarm_playing = threading.Event()
-alarm_stop = threading.Event()
+# -------------------------------------------------
+# Upload Section
+# -------------------------------------------------
+st.markdown("<div class='card'>", unsafe_allow_html=True)
+video_file = st.file_uploader("📤 Upload Video (MP4 / AVI / MOV)", type=["mp4", "avi", "mov"])
+st.markdown("</div><br>", unsafe_allow_html=True)
 
-# -----------------------------
-# Helper functions
-# -----------------------------
-def euclidean(a, b):
-    return np.linalg.norm(np.array(a) - np.array(b))
+# -------------------------------------------------
+# Controls
+# -------------------------------------------------
+col1, col2 = st.columns(2)
+start = col1.button("▶ Start Detection", use_container_width=True)
+stop = col2.button("⏹ Stop Detection", use_container_width=True)
 
-def landmark_to_point(lm, w, h):
-    return int(lm.x * w), int(lm.y * h)
-
-def compute_eye_ratio(landmarks, w, h, up, down, left, right):
-    up = landmark_to_point(landmarks[up], w, h)
-    down = landmark_to_point(landmarks[down], w, h)
-    left = landmark_to_point(landmarks[left], w, h)
-    right = landmark_to_point(landmarks[right], w, h)
-
-    vert = euclidean(up, down)
-    hor = euclidean(left, right)
-    return 0 if hor == 0 else vert / hor
-
-# -----------------------------
-# Alarm Thread
-# -----------------------------
-def alarm_worker():
-    while not alarm_stop.is_set():
-        alarm_playing.wait()
-        if alarm_stop.is_set():
-            break
-        try:
-            playsound(SIREN_FILE)
-        except:
-            pass
-
-threading.Thread(target=alarm_worker, daemon=True).start()
-
-# -----------------------------
-# Streamlit Controls
-# -----------------------------
-run = st.checkbox("▶️ Start Camera")
-
-frame_placeholder = st.empty()
+frame_box = st.image([])
 status_placeholder = st.empty()
 
-# -----------------------------
-# Main Loop
-# -----------------------------
-if run:
-    cap = cv2.VideoCapture(CAMERA_ID)
+if video_file and start:
+    temp = tempfile.NamedTemporaryFile(delete=False)
+    temp.write(video_file.read())
+    cap = cv2.VideoCapture(temp.name)
 
-    if not cap.isOpened():
-        st.error("❌ Camera not accessible")
-    else:
-        st.success("✅ Camera Started")
+    st.session_state["run"] = True
 
-        while run:
-            ret, frame = cap.read()
-            if not ret:
-                st.warning("⚠️ Camera frame not received")
-                break
+    while cap.isOpened() and st.session_state.get("run", True):
+        ret, frame = cap.read()
+        if not ret:
+            break
 
-            h, w = frame.shape[:2]
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = face_mesh.process(rgb)
+        frame = cv2.resize(frame, (640, 480))
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = face_mesh.process(rgb)
 
-            frame_active = False
-            eye_ratio = 1.0
+        status = "NO FACE"
+        box_class = "alert"
 
-            if results.multi_face_landmarks:
-                landmarks = results.multi_face_landmarks[0].landmark
-                l_ratio = compute_eye_ratio(landmarks, w, h, L_EYE_UP, L_EYE_DOWN, L_EYE_LEFT, L_EYE_RIGHT)
-                r_ratio = compute_eye_ratio(landmarks, w, h, R_EYE_UP, R_EYE_DOWN, R_EYE_LEFT, R_EYE_RIGHT)
-                eye_ratio = (l_ratio + r_ratio) / 2
-                frame_active = eye_ratio > EYE_RATIO_THRESHOLD
+        if result.multi_face_landmarks:
+            lm = result.multi_face_landmarks[0].landmark
+            h, w, _ = frame.shape
+            left = eye_ratio(lm, LEFT_EYE, w, h)
+            right = eye_ratio(lm, RIGHT_EYE, w, h)
+            avg = (left + right) / 2
 
-            recent_activity.append(1 if frame_active else 0)
-            active_percent = (sum(recent_activity) / len(recent_activity)) * 100
+            if avg < EYE_RATIO_THRESHOLD:
+                status = "DROWSY 😴"
+                box_class = "drowsy"
+            else:
+                status = "ALERT 😀"
+                box_class = "alert"
 
-            if len(recent_activity) == BUFFER_LEN:
-                if active_percent < ACTIVE_PERCENT_THRESHOLD:
-                    alarm_playing.set()
-                else:
-                    alarm_playing.clear()
+        frame_box.image(frame, channels="BGR")
+        status_placeholder.markdown(
+            f"<div class='status-box {box_class}'>Status: {status}</div>",
+            unsafe_allow_html=True
+        )
 
-            status = "🟢 ACTIVE" if frame_active else "🔴 INACTIVE"
+        time.sleep(0.03)
 
-            status_placeholder.markdown(
-                f"""
-                **Eye Ratio:** `{eye_ratio:.3f}`  
-                **Status:** {status}  
-                **Active %:** `{active_percent:.1f}%`
-                """
-            )
+    cap.release()
 
-            frame_placeholder.image(frame, channels="BGR")
-            time.sleep(0.03)
+if stop:
+    st.session_state["run"] = False
+    st.warning("⏹ Detection stopped by user.")
 
-        cap.release()
-        alarm_stop.set()
-        alarm_playing.clear()
+# -------------------------------------------------
+# Footer
+# -------------------------------------------------
+st.markdown("<br><center>⚠️ Live webcam is not supported on Streamlit Cloud. Use local/VPS for real camera.</center>", unsafe_allow_html=True)
