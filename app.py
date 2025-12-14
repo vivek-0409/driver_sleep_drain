@@ -178,12 +178,14 @@ if video_file and start:
         time.sleep(0.03)
 
     cap.release()
-
 if stop:
-    st.session_state["run"] = False
+    st.session_state.run = False
     st.warning("⏹ Detection stopped by user.")
+    st.stop()
+
 
 # -------------------------------------------------
 # Footer
 # -------------------------------------------------
 st.markdown("<br><center>⚠️ Live webcam is not supported on Streamlit Cloud. Use local/VPS for real camera.</center>", unsafe_allow_html=True)
+
